@@ -1,0 +1,56 @@
+name: CloudWatch setup (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      alert_email:
+        description: Email address for SNS alerts
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-2
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Log groups (14-day retention)
+        run: |
+          for svc in api worker frontend db redis; do
+            aws logs create-log-group --log-group-name /pollhub/$svc 2>/dev/null || true
+            aws logs put-retention-policy --log-group-name /pollhub/$svc --retention-in-days 14
+          done
+      - name: SNS topic and email subscription
+        run: |
+          ARN=$(aws sns create-topic --name pollhub-alerts --query TopicArn --output text)
+          aws sns subscribe --topic-arn "$ARN" --protocol email --notification-endpoint "${{ inputs.alert_email }}"
+          echo "TOPIC_ARN=$ARN" >> "$GITHUB_ENV"
+      - name: Metric filters
+        run: |
+          aws logs put-metric-filter --log-group-name /pollhub/api --filter-name api-errors \
+            --filter-pattern "ERROR" \
+            --metric-transformations metricName=ApiErrors,metricNamespace=PollHub,metricValue=1
+          aws logs put-metric-filter --log-group-name /pollhub/worker --filter-name worker-errors \
+            --filter-pattern '{ $.level = "error" }' \
+            --metric-transformations metricName=WorkerErrors,metricNamespace=PollHub,metricValue=1
+      - name: Alarms
+        run: |
+          for pair in "pollhub-api-errors:ApiErrors" "pollhub-worker-errors:WorkerErrors"; do
+            aws cloudwatch put-metric-alarm --alarm-name "${pair%%:*}" --namespace PollHub \
+              --metric-name "${pair##*:}" --statistic Sum --period 300 --evaluation-periods 1 \
+              --threshold 1 --comparison-operator GreaterThanOrEqualToThreshold \
+              --treat-missing-data notBreaching --alarm-actions "$TOPIC_ARN"
+          done
+          aws cloudwatch put-metric-alarm --alarm-name pollhub-ec2-high-cpu \
+            --namespace AWS/EC2 --metric-name CPUUtilization --statistic Average \
+            --dimensions Name=InstanceId,Value=${{ secrets.EC2_INSTANCE_ID }} \
+            --period 300 --evaluation-periods 2 --threshold 80 \
+            --comparison-operator GreaterThanThreshold --alarm-actions "$TOPIC_ARN"

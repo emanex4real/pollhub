@@ -1,0 +1,23 @@
+CREATE TABLE IF NOT EXISTS users (
+    id            SERIAL PRIMARY KEY,
+    username      VARCHAR(32) UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS options (
+    id   SERIAL PRIMARY KEY,
+    name VARCHAR(64) UNIQUE NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS votes (
+    id         SERIAL PRIMARY KEY,
+    user_id    INTEGER NOT NULL UNIQUE REFERENCES users(id),
+    option_id  INTEGER NOT NULL REFERENCES options(id),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO options (name) VALUES ('Cats'), ('Dogs'), ('Parrots')
+ON CONFLICT (name) DO NOTHING;
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE;
