@@ -52,7 +52,7 @@ jobs:
           docker compose config -q
           docker compose -f docker-compose.prod.yml config -q
       - name: Secret scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scanners: secret
@@ -70,7 +70,7 @@ jobs:
       - name: Build ${{ matrix.image }}
         run: docker build -t pollhub-${{ matrix.image }}:ci ./${{ matrix.image }}
       - name: Scan ${{ matrix.image }}
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: pollhub-${{ matrix.image }}:ci
           severity: CRITICAL,HIGH
