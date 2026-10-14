@@ -95,7 +95,7 @@ export default function Admin({ token, onBack }) {
       <div className="card">
         <h2>Users ({users.length})</h2>
         <table>
-          <thead><tr><th>Username</th><th>Role</th><th>Voted</th><th>Joined</th></tr></thead>
+          <thead><tr><th>Username</th><th>Role</th><th>Voted</th><th>Joined</th><th></th></tr></thead>
           <tbody>
             {users.map((u) => (
               <tr key={u.id}>
@@ -103,6 +103,7 @@ export default function Admin({ token, onBack }) {
                 <td>{u.is_admin ? "Admin" : "User"}</td>
                 <td>{u.has_voted ? "Yes" : "No"}</td>
                 <td>{new Date(u.created_at).toLocaleDateString()}</td>
+                <td><button className="link" onClick={() => act(`/admin/users/${u.id}/reset-password`, "POST", null, `Set a temporary password for ${u.username}?`)}>Reset password</button></td>
               </tr>
             ))}
           </tbody>

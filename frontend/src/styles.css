@@ -92,3 +92,27 @@ th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #e6eaf3; }
   .panel, .card { padding: 16px; }
   .hero h1 { font-size: 1.4rem; }
 }
+
+/* ---- Professional refresh: landing page ---- */
+:root { --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif; --navy: #0f2342; --bg: #f6f7fa; }
+h1, h2 { font-family: var(--serif); font-weight: 700; letter-spacing: -.01em; }
+.site-header { padding: 14px max(20px, calc((100% - 1040px) / 2)); border-bottom: 3px solid var(--blue); }
+.panel, .card { box-shadow: 0 1px 2px rgba(15,35,66,.05), 0 8px 24px -12px rgba(15,35,66,.18); }
+.site-footer { max-width: 1040px; margin: 0 auto; border-top: 1px solid var(--line); padding-top: 16px; }
+
+.page.landing { max-width: 1040px; display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr); gap: 56px; align-items: center; padding-top: 56px; padding-bottom: 56px; min-height: calc(100vh - 160px); }
+.intro h1 { font-size: 2.6rem; line-height: 1.1; margin: 0 0 16px; }
+.lead { font-size: 1.1rem; color: var(--muted); margin: 0 0 32px; max-width: 52ch; }
+.assurances { list-style: none; margin: 0; padding: 0; display: grid; gap: 20px; }
+.assurances li { display: grid; gap: 2px; padding-left: 18px; border-left: 3px solid var(--blue); }
+.assurances span { color: var(--muted); font-size: .95rem; }
+.auth { margin-bottom: 0; padding: 28px; }
+.auth h2 { font-size: 1.5rem; }
+
+@media (max-width: 800px) {
+  .page.landing { grid-template-columns: 1fr; gap: 32px; padding-top: 32px; min-height: 0; }
+  .intro h1 { font-size: 2rem; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+.info { background: #e9f6ef; color: var(--ok); border-radius: 8px; padding: 10px 12px; margin: 0; }

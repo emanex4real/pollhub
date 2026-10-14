@@ -1,10 +1,15 @@
 """Voting API: logins, voting rules, results. Votes are queued in Redis; the worker saves them."""
 import datetime
+import hashlib
 import json
 import logging
 import os
+import re
+import secrets
+import smtplib
 import time
 from contextlib import contextmanager
+from email.message import EmailMessage
 from functools import wraps
 
 import jwt
@@ -66,6 +71,44 @@ def init_db(retries=30):
     raise RuntimeError("database never became ready")
 
 
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def hash_token(token):
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def too_many(key, limit, window=900):
+    """Simple Redis counter: True once `key` was hit more than `limit` times in `window` seconds."""
+    r = get_redis()
+    n = r.incr(key)
+    if n == 1:
+        r.expire(key, window)
+    return n > limit
+
+
+def send_reset_email(to, token):
+    link = os.environ.get("APP_URL", "http://localhost:8080").rstrip("/") + "/#reset=" + token
+    host = os.environ.get("SMTP_HOST", "").strip()
+    if not host:  # development fallback: no mail server configured
+        log.info("SMTP not configured; password reset link for %s: %s", to, link)
+        return
+    msg = EmailMessage()
+    msg["Subject"] = "Reset your PollHub password"
+    msg["From"] = os.environ.get("SMTP_FROM", "no-reply@localhost")
+    msg["To"] = to
+    msg.set_content("Use this link to choose a new password. It expires in 30 minutes and works once:\n\n"
+                    f"{link}\n\nIf you did not ask for this, you can ignore this email.")
+    try:
+        with smtplib.SMTP(host, int(os.environ.get("SMTP_PORT", "587")), timeout=10) as smtp:
+            smtp.starttls()
+            if os.environ.get("SMTP_USER"):
+                smtp.login(os.environ["SMTP_USER"], os.environ.get("SMTP_PASSWORD", ""))
+            smtp.send_message(msg)
+    except Exception:
+        log.exception("could not send reset email")
+
+
 def create_app():
     app = Flask(__name__)
     secret = os.environ.get("JWT_SECRET", "")
@@ -108,12 +151,17 @@ def create_app():
             return jsonify(error="Username must be 3-32 characters"), 400
         if len(password) < 8:
             return jsonify(error="Password must be at least 8 characters"), 400
+        email = str(body.get("email") or "").strip().lower()
+        if email and not EMAIL_RE.match(email):
+            return jsonify(error="Enter a valid email address"), 400
         try:
             with cursor() as cur:
-                cur.execute("INSERT INTO users (username, password_hash, is_admin) VALUES (%s, %s, %s)",
+                cur.execute("INSERT INTO users (username, password_hash, is_admin, email) VALUES (%s, %s, %s, %s)",
                             (username, generate_password_hash(password),
-                             username == os.environ.get("ADMIN_USERNAME", "").strip()))
-        except errors.UniqueViolation:
+                             username == os.environ.get("ADMIN_USERNAME", "").strip(), email or None))
+        except errors.UniqueViolation as exc:
+            if "email" in (exc.diag.constraint_name or ""):
+                return jsonify(error="That email is already in use"), 409
             return jsonify(error="Username already taken"), 409
         return jsonify(message="Registered"), 201
 
@@ -132,6 +180,44 @@ def create_app():
              "exp": datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=8)},
             secret, algorithm="HS256")
         return jsonify(token=token, username=username, is_admin=bool(row[2]))
+
+    @app.post("/api/forgot")
+    def forgot():
+        email = str((request.get_json(silent=True) or {}).get("email", "")).strip().lower()
+        reply = jsonify(message="If an account uses that email, a reset link has been sent. It expires in 30 minutes.")
+        ip = (request.headers.get("X-Forwarded-For") or request.remote_addr or "?").split(",")[0].strip()
+        if not email or too_many(f"forgot:ip:{ip}", 5) or too_many(f"forgot:email:{email}", 3):
+            return reply  # same answer every time, so nobody can probe which emails exist
+        token = None
+        with cursor() as cur:
+            cur.execute("SELECT id FROM users WHERE LOWER(email) = %s", (email,))
+            row = cur.fetchone()
+            if row:
+                token = secrets.token_urlsafe(32)
+                cur.execute("""INSERT INTO password_resets (user_id, token_hash, expires_at)
+                               VALUES (%s, %s, NOW() + INTERVAL '30 minutes')""", (row[0], hash_token(token)))
+        if token:
+            send_reset_email(email, token)
+        return reply
+
+    @app.post("/api/reset")
+    def reset_password():
+        body = request.get_json(silent=True) or {}
+        token = str(body.get("token", ""))
+        password = str(body.get("password", ""))
+        if len(password) < 8:
+            return jsonify(error="Password must be at least 8 characters"), 400
+        with cursor() as cur:
+            cur.execute("""UPDATE password_resets SET used_at = NOW()
+                           WHERE token_hash = %s AND used_at IS NULL AND expires_at > NOW()
+                           RETURNING user_id""", (hash_token(token),))
+            row = cur.fetchone()
+            if not row:
+                return jsonify(error="This reset link is invalid or has expired"), 400
+            cur.execute("UPDATE users SET password_hash = %s WHERE id = %s",
+                        (generate_password_hash(password), row[0]))
+            cur.execute("UPDATE password_resets SET used_at = NOW() WHERE user_id = %s AND used_at IS NULL", (row[0],))
+        return jsonify(message="Password updated")
 
     @app.get("/api/options")
     def options():
@@ -238,6 +324,20 @@ def create_app():
         get_redis().delete("voters", "results", "votes", "votes:failed")
         log.info("admin reset the election (user %s)", g.user_id)
         return jsonify(message="All votes cleared")
+
+    @app.post("/api/admin/users/<int:user_id>/reset-password")
+    @admin_required
+    def admin_reset_password(user_id):
+        temp = secrets.token_urlsafe(9)
+        with cursor() as cur:
+            cur.execute("UPDATE users SET password_hash = %s WHERE id = %s RETURNING username",
+                        (generate_password_hash(temp), user_id))
+            row = cur.fetchone()
+            if not row:
+                return jsonify(error="User not found"), 404
+            cur.execute("UPDATE password_resets SET used_at = NOW() WHERE user_id = %s AND used_at IS NULL", (user_id,))
+        log.info("admin %s reset the password of user %s", g.user_id, user_id)
+        return jsonify(message=f"Temporary password for {row[0]}: {temp} (share it privately)")
 
     @app.errorhandler(Exception)
     def on_error(exc):

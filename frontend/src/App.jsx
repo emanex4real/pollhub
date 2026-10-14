@@ -35,19 +35,38 @@ function Steps({ current }) {
 }
 
 function AuthForm({ onLogin, notice }) {
-  const [mode, setMode] = useState("login");
+  const resetToken = new URLSearchParams(window.location.hash.slice(1)).get("reset");
+  const [mode, setMode] = useState(resetToken ? "reset" : "login");
   const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
   const [error, setError] = useState("");
+  const [info, setInfo] = useState("");
   const [busy, setBusy] = useState(false);
+
+  function go(next) {
+    setMode(next); setError(""); setInfo(""); setPassword(""); setConfirm("");
+  }
 
   async function submit(e) {
     e.preventDefault();
     setError("");
+    setInfo("");
     setBusy(true);
     try {
-      if (mode === "register") await api("/register", { method: "POST", body: { username, password } });
-      onLogin(await api("/login", { method: "POST", body: { username, password } }));
+      if (mode === "forgot") {
+        setInfo((await api("/forgot", { method: "POST", body: { email } })).message);
+      } else if (mode === "reset") {
+        if (password !== confirm) throw new Error("The two passwords do not match");
+        await api("/reset", { method: "POST", body: { token: resetToken, password } });
+        window.history.replaceState(null, "", window.location.pathname);
+        go("login");
+        setInfo("Password updated. Sign in with your new password.");
+      } else {
+        if (mode === "register") await api("/register", { method: "POST", body: { username, password, email } });
+        onLogin(await api("/login", { method: "POST", body: { username, password } }));
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -55,26 +74,53 @@ function AuthForm({ onLogin, notice }) {
     }
   }
 
+  const titles = { login: "Voter sign-in", register: "Register to vote", forgot: "Reset your password", reset: "Choose a new password" };
+  const hints = {
+    login: "Sign in to receive your ballot.",
+    register: "Create your voter account, then you can vote.",
+    forgot: "Enter the email on your account and we will send you a reset link.",
+    reset: "Pick a new password for your account.",
+  };
+  const showPassword = mode !== "forgot";
+  const submitLabel = { login: "Sign in", register: "Register and sign in", forgot: "Send reset link", reset: "Save new password" }[mode];
+
   return (
-    <form className="panel" onSubmit={submit}>
-      <h2>{mode === "login" ? "Voter sign-in" : "Register to vote"}</h2>
-      <p className="muted">
-        {mode === "login" ? "Sign in to receive your ballot." : "Create your voter account, then you can vote."}
-      </p>
+    <form className="panel auth" onSubmit={submit}>
+      <h2>{titles[mode]}</h2>
+      <p className="muted">{hints[mode]}</p>
       {notice && <p className="alert" role="alert">{notice}</p>}
-      <label htmlFor="username">Username</label>
-      <input id="username" autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} />
-      <label htmlFor="password">Password</label>
-      <input id="password" type="password" placeholder="At least 8 characters"
-             autoComplete={mode === "login" ? "current-password" : "new-password"}
-             value={password} onChange={(e) => setPassword(e.target.value)} />
+      {info && <p className="info" role="status">{info}</p>}
+      {(mode === "login" || mode === "register") && (
+        <>
+          <label htmlFor="username">Username</label>
+          <input id="username" autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} />
+        </>
+      )}
+      {(mode === "register" || mode === "forgot") && (
+        <>
+          <label htmlFor="email">{mode === "register" ? "Email (optional, used to reset your password)" : "Email"}</label>
+          <input id="email" type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+        </>
+      )}
+      {showPassword && (
+        <>
+          <label htmlFor="password">{mode === "reset" ? "New password" : "Password"}</label>
+          <input id="password" type="password" placeholder="At least 8 characters"
+                 autoComplete={mode === "login" ? "current-password" : "new-password"}
+                 value={password} onChange={(e) => setPassword(e.target.value)} />
+        </>
+      )}
+      {mode === "reset" && (
+        <>
+          <label htmlFor="confirm">Confirm new password</label>
+          <input id="confirm" type="password" autoComplete="new-password" value={confirm} onChange={(e) => setConfirm(e.target.value)} />
+        </>
+      )}
       {error && <p className="alert" role="alert">{error}</p>}
-      <button type="submit" className="primary" disabled={busy}>
-        {busy ? "Please wait..." : mode === "login" ? "Sign in" : "Register and sign in"}
-      </button>
-      <button type="button" className="link" onClick={() => { setMode(mode === "login" ? "register" : "login"); setError(""); }}>
-        {mode === "login" ? "First time? Register to vote" : "Already registered? Sign in"}
-      </button>
+      <button type="submit" className="primary" disabled={busy}>{busy ? "Please wait..." : submitLabel}</button>
+      {mode === "login" && <button type="button" className="link" onClick={() => go("forgot")}>Forgot your password?</button>}
+      {mode === "login" && <button type="button" className="link" onClick={() => go("register")}>First time? Register to vote</button>}
+      {mode !== "login" && <button type="button" className="link" onClick={() => go("login")}>Back to sign in</button>}
     </form>
   );
 }
@@ -235,13 +281,29 @@ export default function App() {
           <Admin token={session.token} onBack={() => setShowAdmin(false)} />
         </main>
       ) : (
-        <main className="page">
-          <div className="hero">
-            <h1>{ELECTION_TITLE}</h1>
-            <p>{INSTRUCTIONS}</p>
-          </div>
-          <Steps current={step} />
-          {!session && <AuthForm onLogin={handleLogin} notice={notice} />}
+        <main className={session ? "page" : "page landing"}>
+          {!session ? (
+            <>
+              <div className="intro">
+                <h1>{ELECTION_TITLE}</h1>
+                <p className="lead">{INSTRUCTIONS}</p>
+                <ul className="assurances">
+                  <li><strong>One vote per voter</strong><span>Each account can vote once, so every result counts one person once.</span></li>
+                  <li><strong>Review before you submit</strong><span>Check your choice on a summary screen before it becomes final.</span></li>
+                  <li><strong>Live results</strong><span>See the standings as soon as you have voted.</span></li>
+                </ul>
+              </div>
+              <AuthForm onLogin={handleLogin} notice={notice} />
+            </>
+          ) : (
+            <>
+              <div className="hero">
+                <h1>{ELECTION_TITLE}</h1>
+                <p>{INSTRUCTIONS}</p>
+              </div>
+              <Steps current={step} />
+            </>
+          )}
           {session && stage === "choose" && (
             <Ballot options={options} loadError={loadError} selected={selected}
                     onSelect={setSelected} onNext={() => setStage("review")} />
